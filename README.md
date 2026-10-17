@@ -50,7 +50,7 @@ Built for the **WeMakeDevs Graph Hacks** hackathon.
 | Deterministic synthetic estate | `data.py`, `seed.py` | 40 services, 8 teams, 18 engineers, 90 dependencies, 10 incidents — reproducible |
 | **Agent investigation (optional, local AI)** | `agent_tools.py`, `llm.py`, `app.py` | A locally running Ollama model selects tools from a 3-tool allowlist; every call runs real Cypher and the UI shows the evidence |
 | Professional UI | `app.py` | Overview, Blast radius, Ownership, Incidents, Graph view, Agent investigation |
-| Automated tests | `tests/` | 56 tests — 37 original + 19 agent tests, including a real Ollama tool-calling round trip |
+| Automated tests | `tests/` | 57 tests — 37 original + 20 agent tests, including a real Ollama tool-calling round trip |
 
 ---
 
