@@ -118,7 +118,40 @@ tier, edges labelled with real relationship types.
 
 ---
 
-## 2:40 — Honest failure
+## 2:40 — Agent investigation: real AI, real graph (world first here)
+
+**Agent investigation** tab (6th tab). It should show `Ollama reachable · model loaded:
+qwen3.5:2b`. In the question box, type it in plain English:
+
+> *"What breaks if payment-service fails, which teams own the affected services, and have we
+> seen a similar incident?"*
+
+Press **Run agent investigation**. While it thinks, say:
+
+> "There is a model in the loop — not in any cloud: qwen3.5 is running in Ollama on this very
+> laptop. Its whole job is to choose tools. It gets a menu of exactly three validated tools
+> — impact analysis, ownership, incident history — and a list of real service ids. It never
+> sees or writes Cypher."
+
+Expected transcript on screen, each numbered step backed by its tool result:
+
+1. **`impact_analysis` with `payment-service`** — status `ok`; the evidence table lists the
+   affected services with the real `->` paths (`API Gateway -> Web Backend-for-Frontend ->
+   Checkout Service -> Payment Service`).
+2. **`ownership_lookup`** (model reuses the ids it learned) — teams with Slack channels.
+3. **`incident_history`** — the incidents the graph actually records for those services.
+
+Then the agent answer, citing exactly those records. Per-fact reassurance:
+
+> "The AI only chose *which verified query to run*. Every fact above came out of FalkorDB —
+> cross-check any claim against the evidence tables right above its answer."
+
+Point at the honesty rails: four-tool hard budget, argument validation, and that an unknown
+id gives `not_found` with close matches instead of a hallucinated story.
+
+---
+
+## 2:55 — Honest failure
 
 Back in **Blast radius**, open **Look up an id directly**, type `paymnt-service`, press Enter.
 
@@ -146,8 +179,9 @@ Optionally show the terminal equivalent returning exit code 2:
 ## Closing line
 
 > "FalkorDB is not decoration here. Every conclusion in this UI is a Cypher traversal, the
-> evidence is the path itself, and the tests run against a live server — 37 of them, including
-> a check that a three-hop chain really comes back as three hops."
+> evidence is the path itself, and the tests run against a live server — 56 of them,
+> including a check that a three-hop chain really comes back as three hops, and one that runs
+> a real local model picking real tools and gets its facts from the same graph."
 
 ---
 

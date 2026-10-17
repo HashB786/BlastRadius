@@ -11,12 +11,15 @@ and no mock data: if the database is down the page says so.
 from __future__ import annotations
 
 import html
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
 
 from blastradius import __version__, queries
+from blastradius.agent_tools import TOOL_NAMES
+from blastradius import llm as local_llm
 from blastradius.config import get_config
 from blastradius.db import BlastRadiusDB
 from blastradius.seed import seed_graph
@@ -690,6 +693,154 @@ def sidebar(db: BlastRadiusDB, health) -> None:
         )
 
 
+def agent_tab(db: BlastRadiusDB, entities: list[dict]) -> None:
+    """Agent Investigation: the local Ollama model picks tools; the graph answers."""
+
+    st.caption(
+        "AI agent, fully local — picks from three validated tools only "
+        f"({', '.join(TOOL_NAMES)}) and executes each against live FalkorDB. "
+        "It never writes Cypher and never invents data: unknown ids and "
+        "insufficient evidence are reported honestly."
+    )
+
+    model_name = st.text_input(
+        "Ollama model tag",
+        value=os.getenv("OLLAMA_MODEL", "") or local_llm.DEFAULT_MODEL,
+        help="Must exist on this machine:  ollama pull <tag>. Configured via OLLAMA_MODEL too.",
+    )
+
+    status, detail = local_llm.check_ollama(model_name)
+    if status == "ok":
+        st.success(f"Ollama reachable · model loaded: `{detail}`")
+    elif status == "unreachable":
+        st.warning("Ollama is not running, so no agent investigation can be shown.")
+        st.markdown(detail)
+        st.markdown(
+            "The rest of the dashboard (the five tabs above) still works without Ollama."
+        )
+        return
+    else:  # model_missing
+        st.warning("Ollama is reachable, but the model needed for this tab is not pulled.")
+        st.markdown(detail)
+        return
+
+    if "agent_question" not in st.session_state:
+        st.session_state["agent_question"] = (
+            "What breaks if payment-service fails, which teams own the "
+            "affected services, and have we seen a similar incident?"
+        )
+    question = st.text_area(
+        "Ask in natural language",
+        value=st.session_state["agent_question"],
+        key="agent_input",
+        height=90,
+    )
+
+    asked = st.button("Run agent investigation", type="primary")
+    if not asked:
+        st.markdown(
+            "**How it works:** the local model sees only a tool menu and service "
+            "ids — never Cypher. Each chosen tool runs the same validated query "
+            "functions as the dashboard tabs; the hard budget is "
+            "4 tool calls per run (no unbounded agent loop)."
+        )
+        return
+
+    with st.spinner("Agent investigating against live FalkorDB …"):
+        known_ids = [e["id"] for e in entities]
+        inv = local_llm.run_investigation(
+            db,
+            question.strip(),
+            model=model_name.strip() or local_llm.DEFAULT_MODEL,
+            known_ids=known_ids,
+        )
+
+    if not inv.succeeded:
+        st.error("The agent could not complete the investigation.")
+        st.markdown(inv.error or "unknown failure")
+        return
+
+    st.subheader("Selected tools & real graph evidence")
+    for index, step in enumerate(inv.steps, start=1):
+        res = step.result
+        if step.kind == "tool_call" and res is not None:
+            call_no = index
+            status_icon = {"ok": "✅", "not_found": "🟡", "rejected": "⛔", "skipped": "⏭️"}.get(
+                res.status, "•"
+            )
+            st.markdown(
+                f"**{call_no}. {status_icon} `{res.tool}`** with `{res.arguments}` — "
+                f"{html.escape(res.detail)}  (round {res.round_id}, action #{call_no})"
+            )
+            with st.expander(f"Evidence returned by {res.tool}"):
+                if res.status == "rejected":
+                    st.error(res.error)
+                imp = res.evidence.get("impacted")
+                if imp is not None:
+                    st.dataframe(
+                        pd.DataFrame(imp)[["service", "hops", "tier", "path"]]
+                        if imp and "service" in imp[0]
+                        else pd.DataFrame(imp),
+                        use_container_width=True,
+                    )
+                teams_ev = res.evidence.get("teams")
+                if isinstance(teams_ev, list) and teams_ev:
+                    st.markdown("**Teams behind those services** (from the graph):")
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {"team": t["name"], "slack": t["slack_channel"], "services": ", ".join(t["services"]), "engineers": ", ".join(t["engineers"])}
+                                for t in teams_ev
+                            ]
+                        ),
+                        use_container_width=True,
+                    )
+                incidents_ev = res.evidence.get("incidents")
+                if incidents_ev:
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {
+                                    "id": i["id"],
+                                    "severity": i["severity"],
+                                    "status": i["status"],
+                                    "role": i["role"],
+                                    "started_at": i["started_at"],
+                                    "affected": ", ".join(i["affected_services"]),
+                                }
+                                for i in incidents_ev
+                            ]
+                        ),
+                        use_container_width=True,
+                    )
+                    for i in incidents_ev:
+                        st.markdown(f"- **{html.escape(i['id'])}** · {html.escape(i['title'])} — {html.escape(i['summary'])}")
+                eng = res.evidence.get("engineers")
+                if eng is not None:
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {"team": e["team"], "engineer": e["name"], "role": e["role"]}
+                                for e in eng
+                            ]
+                        ),
+                        use_container_width=True,
+                    )
+                if res.evidence.get("suggestions"):
+                    st.markdown(
+                        "Close matches in the graph: " + ", ".join(f"`{s}`" for s in res.evidence["suggestions"])
+                    )
+        elif step.kind in ("note", "status") and step.text:
+            st.caption(step.text)
+
+    st.subheader("Agent answer (grounded in the evidence above)")
+    st.markdown(f"> {inv.answer.replace(chr(10), chr(10) + '> ')}")
+    st.caption(
+        "Raw tool results are the source of truth: if a claim above is not "
+        "backed by an item in the evidence, treat this answer as model commentary."
+    )
+
+
 def main() -> None:
     db = get_database()
     health = db.health()
@@ -700,7 +851,14 @@ def main() -> None:
     entities = load_entities(db)
     sidebar(db, health)
 
-    tabs = st.tabs(["Overview", "Blast radius", "Ownership", "Incidents", "Graph view"])
+    tabs = st.tabs([
+        "Overview",
+        "Blast radius",
+        "Ownership",
+        "Incidents",
+        "Graph view",
+        "Agent investigation",
+    ])
     with tabs[0]:
         overview_tab(db, health)
     with tabs[1]:
@@ -711,6 +869,8 @@ def main() -> None:
         incidents_tab(db)
     with tabs[4]:
         graph_tab(db, entities)
+    with tabs[5]:
+        agent_tab(db, entities)
 
 
 main()

@@ -10,8 +10,11 @@ BlastRadius answers that from one graph. Give it a failing service or datastore 
 the **exact relationship path** that connects it to the failure, the teams you need to page,
 and the incidents that touched the same component before.
 
-No LLM is involved and no result is generated on the client. Every number, path and name on
-screen is the return value of a Cypher query executed against a live FalkorDB server.
+Every number, path and name on screen is the return value of a Cypher query executed against
+a live FalkorDB server. Nothing is generated on the client. The optional **Agent
+investigation** tab adds a genuinely tool-using AI on top — a *local* Ollama model, no cloud,
+no API key — but its only role is to **pick the next tool and its arguments**. It never
+writes or executes Cypher, and it cannot invent data: see the agent section below.
 
 Built for the **WeMakeDevs Graph Hacks** hackathon.
 
@@ -25,6 +28,7 @@ Built for the **WeMakeDevs Graph Hacks** hackathon.
 - [Quickstart](#quickstart)
 - [Environment variables](#environment-variables)
 - [Using the app](#using-the-app)
+- [Agent investigation — local, tool-using AI](#agent-investigation--local-tool-using-ai)
 - [Command line](#command-line)
 - [The Cypher behind it](#the-cypher-behind-it)
 - [Tests](#tests)
@@ -44,8 +48,9 @@ Built for the **WeMakeDevs Graph Hacks** hackathon.
 | Incident history | `queries.incident_history`, `queries.incident_detail` | `UNION ALL` over `ROOT_CAUSE` and `IMPACTED`, plus downstream replay |
 | Honest missing-service handling | everywhere | Unknown ids return a message and close matches, never a substitute answer |
 | Deterministic synthetic estate | `data.py`, `seed.py` | 40 services, 8 teams, 18 engineers, 90 dependencies, 10 incidents — reproducible |
-| Professional UI | `app.py` | Overview, Blast radius, Ownership, Incidents, Graph view |
-| Automated tests | `tests/` | 37 tests, including live-database integration assertions |
+| **Agent investigation (optional, local AI)** | `agent_tools.py`, `llm.py`, `app.py` | A locally running Ollama model selects tools from a 3-tool allowlist; every call runs real Cypher and the UI shows the evidence |
+| Professional UI | `app.py` | Overview, Blast radius, Ownership, Incidents, Graph view, Agent investigation |
+| Automated tests | `tests/` | 56 tests — 37 original + 19 agent tests, including a real Ollama tool-calling round trip |
 
 ---
 
@@ -202,6 +207,35 @@ nodes/edges : 0 / 0
 Open <http://localhost:8501>. The sidebar shows the live server version, node and edge
 counts, and a round-trip time measured on that page load.
 
+### 6. (Optional) Enable the local AI agent
+
+Ollama is the only local-model requirement, is free, and needs no API key — every token
+stays on your machine.
+
+```powershell
+# 1) Install Ollama (official installer, no admin):
+#    https://ollama.com/download/windows  -> run OllamaSetup.exe
+#    (or:  irm https://ollama.com/install.ps1 | iex)
+
+# 2) Pull the model this demo uses:
+ollama pull qwen3.5:2b
+
+# 3) Make sure Ollama is running (its tray app; defaults to http://localhost:11434)
+ollama serve   # only if the background app is not running
+```
+
+Resource cost (measured targets, hardware we verified on):
+
+| Item | Requirement |
+|---|---|
+| Disk | ~1 GB for Ollama + **3.1 GB** for `qwen3.5:2b` (1.88 B param Q8_0 build) |
+| RAM | ~2.5 GB free during inference (we ran with 5.9 GB free); CPU-only is fine |
+| Network | none at inference time; only the one-time pull needs internet |
+
+Now in the app, the **Agent investigation** tab shows `Ollama reachable · model loaded` and
+the whole tab works. If Ollama is not running or the model is missing, that tab shows
+explicit setup instructions instead — and the five dashboard tabs keep working either way.
+
 To check the demo data without starting the UI:
 
 ```bash
@@ -220,9 +254,12 @@ All optional; defaults match the quickstart.
 | `FALKORDB_PORT` | `6379` | server port |
 | `FALKORDB_PASSWORD` | *(none)* | password set on the container |
 | `FALKORDB_GRAPH` | `blastradius` | graph name; the app never touches other graphs |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | local model endpoint (Agent tab only) |
+| `OLLAMA_MODEL` | `qwen3.5:2b` | local model tag (Agent tab only) |
 
 `.env` is git-ignored. `.env.example` is safe to commit because it holds no real secret.
-Nothing in this repository needs a paid service, a credit card, or an LLM API key.
+Nothing in this repository needs a paid service, a credit card, or a hosted LLM API key.
+The optional agent talks only to Ollama on `127.0.0.1`.
 
 ---
 
@@ -235,10 +272,34 @@ Nothing in this repository needs a paid service, a credit card, or an LLM API ke
 | **Ownership** | Owning team, Slack channel, cost centre, timezone and the engineers on rota. A team view lists everything that team owns plus incident history that touched it. |
 | **Incidents** | Severity, duration and root cause for every incident; open one to see the recorded affected services and the downstream paths the graph returns for its root cause. |
 | **Graph view** | The same blast radius rendered as a Graphviz diagram, with tier colours and real relationship labels. |
+| **Agent investigation** | Ask a question in plain English (e.g. *"What breaks if payment-service fails, which teams own the affected services, and have we seen a similar incident?"*). A local Ollama model (`qwen3.5:2b`) picks tools from a fixed 3-tool allowlist; each pick is validated, executed against live FalkorDB, and its evidence is shown verbatim, followed by the model's evidence-citing answer. |
 
 **Missing data is never papered over.** Type an unknown id in *Blast radius → Look up an id
 directly* and the page says the component is not in the graph, offers close matches, and
 shows no substitute results — the CLI exits with status `2` in the same situation.
+
+---
+
+## Agent investigation — local, tool-using AI
+
+The sixth tab adds a real tool-using agent on top of the same verified query layer. Design
+intents and their enforcement:
+
+| Requirement | How it is enforced in code |
+|---|---|
+| Explicit allowlist | `agent_tools.TOOLS` contains exactly `impact_analysis`, `ownership_lookup`, `incident_history`. The model is given that menu over Ollama `/api/chat` `tools` — it never sees Cypher. |
+| No arbitrary Cypher | There is no code path from the model to the query language. Unknown tool names, unknown argument names and bad types are rejected (`Rejection`) *before* any execution. |
+| Real queries only | Every accepted call runs the same `queries.*` functions the dashboard uses, against the live graph. |
+| Bounded loop | `MAX_TOOL_CALLS = 4` and at most 2 planning rounds; anything beyond the budget is marked `skipped` and shown as such. |
+| Honest `not_found` | An unknown id returns a `not_found` record with genuine close matches (`suggest_services`) — the agent cannot wander off to a fabricated answer. |
+| Grounded answer | Tool evidence is fed back verbatim (`role:"tool"` messages) and the final prompt says to use only those results, say so if insufficient, and cite ids/teams/incidents exactly as returned. |
+| Honest availability | If Ollama is not running or the model is not pulled, the tab shows setup instructions. Nothing pretends a deterministic fallback is an LLM. |
+| Zero cost / zero keys | The model runs on your machine; there is no network call beyond `127.0.0.1` in the agent. |
+
+The request/response shape is the documented Ollama tool-calling flow
+(<https://docs.ollama.com/capabilities/tool-calling>): the assistant returns
+`tool_calls`, we execute them ourselves, and results go back as `role:"tool"` messages.
+Ollama itself never runs our functions.
 
 ---
 
@@ -312,9 +373,13 @@ There is no mock database: a green run means the Cypher really executed.
 ```
 
 ```text
-.....................................                                    [100%]
-37 passed
+................................ s ....                                  [100%]
+56 passed, 1 skipped
 ```
+
+The single skip is the **model round-trip test** (`tests/test_llm.py`): when the Ollama
+service or `qwen3.5:2b` is not present on the machine, it skips with an explicit message
+instead of pretending the integration passed. Pull the model and re-run to cover it.
 
 What is covered:
 
@@ -325,7 +390,14 @@ What is covered:
 - honest missing-service behaviour plus typo suggestions;
 - ownership for services and teams;
 - incident history for a service *and* for a datastore root cause, including the
-  recorded-vs-traversed distinction (`tests/test_queries.py`).
+  recorded-vs-traversed distinction (`tests/test_queries.py`);
+- the agent allowlist: exactly three tools, unknown-tool and malformed-argument rejection,
+  depth range checks (0/7/1.5/"deep"/bool rejected, 1..6 accepted), unsupported arguments,
+  honest `not_found` for unknown ids *after* a real graph lookup, real paths/teams/incident
+  rows for known ids, and the hard 4-call budget (`tests/test_agent_tools.py`);
+- the local-model integration: a genuine question → Ollama → tool selection → live
+  graph → evidence-citing answer round trip, skipping honestly when Ollama is absent
+  (`tests/test_llm.py`).
 
 If the server is not running the suite fails immediately with a message telling you how to
 start it — it does not silently skip.
@@ -349,6 +421,12 @@ The short version:
    downstream paths recomputed from the graph today.
 6. **Ownership → `ledger-service`** — Payments Platform, `#payments-oncall`, three engineers,
    and `INC-2029` as a root cause.
+7. **Agent investigation** — ask: *"What breaks if payment-service fails, which teams own
+   the affected services, and have we seen a similar incident?"* Show the tool calls the
+   model picked, then the actual FalkorDB evidence (impacted services with the real
+   `->` paths, owning teams with Slack channels, the matching incident from the graph),
+   followed by the answer, which cites those records. Close with: *"the AI only chose
+   which verified query to run — every fact on screen is a real Cypher result."*
 
 ---
 
@@ -357,7 +435,9 @@ The short version:
 ```text
 BlastRadius/
 ├── src/blastradius/
-│   ├── app.py          Streamlit UI (5 tabs, live queries)
+│   ├── app.py          Streamlit UI (6 tabs, live queries)
+│   ├── agent_tools.py  agent allowlist: validation + bounded execution over queries.py
+│   ├── llm.py          local Ollama /api/chat tool-calling client (no cloud)
 │   ├── cli.py          health / seed / verify / impact / owners / incidents / overview
 │   ├── config.py       FALKORDB_* configuration
 │   ├── data.py         deterministic synthetic estate (fixed seed 1337)
@@ -367,6 +447,8 @@ BlastRadius/
 ├── tests/
 │   ├── conftest.py     live database fixtures (separate test graph)
 │   ├── test_data.py    dataset invariants, no database required
+│   ├── test_agent_tools.py  allowlist, validation, bounds, honest not-found (live DB)
+│   ├── test_llm.py     real Ollama round trip (skips honestly when absent)
 │   └── test_queries.py integration tests against FalkorDB
 ├── docs/
 │   ├── cypher.md       every query, explained
@@ -412,9 +494,19 @@ docker volume rm blastradius-falkordb-data
 `random.Random(1337)`. Two runs produce byte-identical datasets (asserted in the tests), so
 screenshots and demo numbers stay stable.
 
-**No mocks, no LLM.** Query results are never cached to disk or fabricated. There is no
-fallback graph, no sample JSON, and no model in the loop. The only cached object is the Redis
-connection itself (`st.cache_resource`), which is reused across page reruns.
+**No mocks.** Query results are never cached to disk or fabricated. There is no
+fallback graph and no sample JSON. The five dashboard tabs remain pure Cypher: no model in
+the loop, no client-side generation. The only optional model involvement is the Agent tab's
+tool *selection*; tool *results* are always untouched Cypher returns. The only cached object
+is the Redis connection itself (`st.cache_resource`), reused across page reruns.
+
+**Agent honesty.** The agent can be wrong about *which* tool to ask first, and it may
+express that uncertainty; it cannot be wrong about *facts*, because every fact it is shown
+reaches it as a tool result from the database. When the model calls a tool with arguments
+that do not validate, the rejection is recorded and shown in the UI. When the model asks
+for more than four executions, the excess calls are visibly skipped (`skipped:
+budget_exceeded`), never silently dropped. And when the local model is not installed, the
+UI says so plainly rather than pretending a rule-based guesser is an LLM.
 
 **Paths are the evidence.** For each affected service the application keeps the shortest
 returned path and renders every node and edge, including `protocol`, `criticality` and
