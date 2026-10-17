@@ -1,0 +1,26 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- Virtual environment ---
+.venv/
+venv/
+
+# --- Local secrets (never commit) ---
+.env
+*.secret
+*.pem
+
+# --- Runtime output ---
+logs/
+*.log
+.freebuff/
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

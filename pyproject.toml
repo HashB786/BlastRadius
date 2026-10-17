@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blastradius"
+version = "0.1.0"
+description = "Multi-hop impact analysis over a real FalkorDB graph"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.40,<2",
+    "falkordb>=1.0,<2",
+    "pandas>=2.2",
+    "python-dotenv>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

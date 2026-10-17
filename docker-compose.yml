@@ -1,0 +1,24 @@
+# Optional convenience: `docker compose up -d` does the same thing as the
+# `docker run` command in README.md. Requires FALKORDB_PASSWORD in .env.
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: blastradius-falkordb
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    environment:
+      # The image's entrypoint reads these; command-line args are ignored.
+      BROWSER: "0"
+      REDIS_ARGS: "--requirepass ${FALKORDB_PASSWORD} --save 60 1 --appendonly no"
+    volumes:
+      - falkordb-data:/var/lib/falkordb/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${FALKORDB_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  falkordb-data:

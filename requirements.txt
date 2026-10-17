@@ -1,0 +1,8 @@
+# Core runtime
+streamlit>=1.40,<2
+falkordb>=1.0,<2
+pandas>=2.2
+python-dotenv>=1.0,<2
+
+# Testing
+pytest>=8.0
