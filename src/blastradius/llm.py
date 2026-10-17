@@ -29,7 +29,11 @@ from .db import BlastRadiusDB
 
 DEFAULT_MODEL = "qwen3.5:2b"
 DEFAULT_HOST = "http://127.0.0.1:11434"
-REQUEST_TIMEOUT = 180  # seconds; small CPU model + bounded loop
+REQUEST_TIMEOUT = 600  # seconds; first CPU inference of ~2 GB model needs minutes
+KEEP_ALIVE = "10m"  # keep the model resident between rounds
+PLAN_MAX_TOKENS = 300  # bounded tool-selection round (small structured output)
+ANSWER_MAX_TOKENS = 350  # bounded final answer; citations are ids, not prose
+PLAN_NUM_CTX = 8192  # explicit ctx so the tools schema is never truncated
 ChatStatus = Literal["ok", "unreachable", "model_missing"]
 
 
@@ -146,6 +150,14 @@ def run_investigation(
         "messages": messages,
         "tools": agent_tools.tools_schema(),
         "stream": False,
+        "keep_alive": KEEP_ALIVE,
+        # qwen3.5 is a reasoning model: unless reasoning is disabled it spends
+        # the token budget on a private `think` phase before any tool call is
+        # emitted, which shows up as an empty message with no tool_calls.
+        # Disabling it (documented boolean, verified against this Ollama
+        # version) keeps planning fast, deterministic and within budget.
+        "think": False,
+        "options": {"num_predict": PLAN_MAX_TOKENS, "num_ctx": PLAN_NUM_CTX},
     }
 
     executed = 0
@@ -228,7 +240,10 @@ def run_investigation(
             }
         ]
 
-    final = _chat(base, {**payload, "tools": []}) if inv.tool_results else None
+    final_payload = {**payload, "tools": []} if inv.tool_results else None
+    if final_payload is not None:
+        final_payload["options"] = {"num_predict": ANSWER_MAX_TOKENS, "num_ctx": PLAN_NUM_CTX}
+    final = _chat(base, final_payload) if final_payload else None
     if final is not None:
         answer_text = ((final.get("message") or {}).get("content") or "").strip()
         if answer_text:
