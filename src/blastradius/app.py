@@ -688,8 +688,9 @@ def sidebar(db: BlastRadiusDB, health) -> None:
 
         st.divider()
         st.caption(
-            "No LLM, no mock data. Queries run against FalkorDB with the "
-            "official Python client."
+            "Dashboard queries run against FalkorDB. The graph contains "
+            "synthetic demo data; the optional Agent investigation uses "
+            "a local Ollama model."
         )
 
 
